@@ -10,13 +10,13 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 
-import com.project.auth.filter.JWTFilter;
+import com.project.auth.filter.JwtFilter;
 
 @Configuration
 public class SecurityConfig {
 
 	@Autowired
-	private JWTFilter jwtFilter;
+	private JwtFilter jwtFilter;
 	
 	@Bean
 	public PasswordEncoder passwordEncoder() {

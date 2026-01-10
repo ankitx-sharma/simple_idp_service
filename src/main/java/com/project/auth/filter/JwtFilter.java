@@ -22,7 +22,7 @@ import jakarta.servlet.ServletResponse;
 import jakarta.servlet.http.HttpServletRequest;
 
 @Component
-public class JWTFilter implements Filter{
+public class JwtFilter implements Filter{
 
 	@Autowired
 	private JwtUtil jwtUtil;
