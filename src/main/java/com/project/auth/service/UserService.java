@@ -20,8 +20,8 @@ public class UserService {
 	private PasswordEncoder passwordEncoder;
 	
 	public void registerUser(User user) {
-		UserEntity userEntity = new UserEntity(user);
-		userEntity.setPassword(passwordEncoder.encode(user.getPassword()));
+		String password = passwordEncoder.encode(user.getPassword());
+		UserEntity userEntity = new UserEntity(user.getUsername(), password);
 		userRepository.save(userEntity);
 	}
 	
