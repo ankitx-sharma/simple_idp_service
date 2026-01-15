@@ -1,295 +1,354 @@
-## Identity Provider & Authorization Server (IdP + AS)
+# Custom Authorization Server (OAuth2-style) — Design Document
 
-#### Document Type
-Solution Design / Functional Architecture Document
+## 1. Purpose
 
-#### Audience
-Backend engineers, reviewers, system architects
+Build a learning-focused, portfolio-grade **Authorization Server** that issues and manages tokens in an OAuth2-style architecture.
 
-##
+This project is designed to demonstrate:
+- Authentication + token issuance separation from resource APIs
+- Secure JWT issuance & validation model
+- Refresh token lifecycle (rotation/revocation)
+- Client trust model (client registration + allowed flows)
+- Key management via JWKS + rotation
+- Practical security hardening (rate limiting, abuse prevention, audit logs)
 
-### Purpose of the System
+## 2. Scope
 
-The purpose of this project is to design and implement a **self-hosted Identity Provider (IdP)** combined with an **Authorization Server (AS)** that is responsible for:
+### In-scope
+- User authentication (username/password)
+- Client registration and trust rules
+- Token issuance (access + refresh)
+- JWKS endpoint for public keys
+- Refresh token rotation + revocation
+- Minimal OAuth2-style endpoints:
+  - Token endpoint supporting at least Password + Refresh Token grants
+  - Optional: Client Credentials grant (for service-to-service)
+- Token introspection (optional, for opaque tokens or debugging)
+- Basic authorization concepts: scopes/roles as claims
 
-#### Authenticating users
+### Out-of-scope (Non-goals)
+- Full IAM suite (SCIM, HR provisioning, org charts, complex admin UI)
+- SAML
+- LDAP/AD federation
+- Social logins (Google/GitHub)
+- Full authorization policy engine (ABAC with complex rules)
+- Multi-tenant enterprise features (may be added later)
 
-- Managing user credentials securely
-- Issuing cryptographically verifiable access tokens (JWT)
-- Managing long-lived user sessions using refresh tokens
-- Defining and enforcing trust for client applications requesting tokens
+## 3. Terminology
 
-This system is not a business application and does not expose protected domain APIs.
-Its sole responsibility is identity and token issuance.
+- **Authorization Server (AS)**: issues tokens and manages sessions/refresh tokens.
+- **Resource Server (RS)**: backend APIs that validate tokens and enforce access.
+- **Client**: an application that requests tokens (web app, mobile app, service).
+- **Principal**: the authenticated user (or service identity in client-credentials).
+- **Access Token**: short-lived JWT used to access APIs.
+- **Refresh Token**: long-lived token used to obtain new access tokens.
+- **JWKS**: JSON Web Key Set endpoint publishing public keys for JWT validation.
 
-##
+## 4. Actors and Responsibilities
 
-### Business Problem Statement
+### 4.1 User
+- Logs in via credentials
+- Receives tokens (via client app)
 
-Modern applications require a centralized mechanism to:
+### 4.2 Client Application
+- Calls AS to obtain tokens
+- Stores tokens (securely) and uses access token to call APIs
+- Uses refresh token to obtain new access tokens
 
-- Avoid storing user credentials in every application
-- Support stateless authentication for scalable systems
-- Enable secure session continuation without repeated logins
-- Control which applications are allowed to obtain access tokens
+### 4.3 Authorization Server (this project)
+- Authenticates users
+- Issues tokens with correct claims
+- Enforces client trust rules (allowed grants, redirect URIs if applicable)
+- Rotates and revokes refresh tokens
+- Publishes JWKS for token verification by Resource Servers
 
-Without a dedicated Identity Provider and Authorization Server, applications tend to:
+### 4.4 Resource Server(s) (separate sample app or module)
+- Validates JWT signature + issuer/audience + expiry
+- Enforces scopes/roles for endpoints
 
-- Duplicate authentication logic
-- Handle passwords insecurely
-- Rely on server-side sessions that do not scale well
-- Lack clear trust boundaries between systems
-
-This project addresses those concerns by isolating identity and token issuance into a dedicated service.
-
-##
-
-### Scope Definition
-In Scope
-
-- User registration and authentication
-- Secure password storage and verification
-- JWT access token issuance
-- Refresh token lifecycle management (issue, rotate, revoke)
-- Client registration and trust validation
-- Cryptographic key management for token signing
-- Public key exposure via JWKS endpoint
-
-Out of Scope
-- Business/domain APIs (no Resource Server)
-- OAuth authorization code flows and redirects
-- Consent screens and SSO user experience
-- Multi-factor authentication (MFA)
-- User profile management UI
-- Social login or identity federation
-
-##
-
-### System Classification
-
-This system functions as:
-
-- **Identity Provider (IdP)** — authenticates users and manages identity data
-- **Authorization Server (AS)** — issues access and refresh tokens to trusted clients
-
-The system does not act as a Resource Server.
-
-##
-
-### High-Level Architecture
-Logical Responsibilities
-
-Responsibility | Description
---- | ---
-Identity Management | User credentials, password hashing, account status
-Token Issuance | JWT creation, signing, expiration handling
-Session Continuity | Refresh token persistence and rotation
-Client Trust | Determines which applications may request tokens
-Key Distribution | Publishes public keys for token verification
-
-##
-
-### Core Domain Concepts
-#### 1. User
-
-Represents a human identity.
-
-Key attributes:
-
-- Unique identifier
-- Username / email
-- Password hash
-- Assigned roles
-- Account status (enabled / disabled)
-
-Passwords are never stored in plaintext and are verified using secure hashing algorithms.
-
-#### 2. Client (Critical Concept)
-
-A Client represents an application, not a user.
-
-Examples:
-
-- Web frontend
-- Mobile application
-- Backend service
-- CLI or automation tool
-
-Clients must be **explicitly registered** before they are allowed to request tokens.
-
-Key attributes:
-
-- `client_id`
-- `client_secret` (hashed, for confidential clients)
-- Client type (PUBLIC or CONFIDENTIAL)
-- Allowed scopes / audiences
-- Enabled status
-
-This ensures that tokens are only issued to trusted applications, not arbitrary callers.
-
-#### 3. Access Token (JWT)
-
-Access tokens are:
-
-- Short-lived
-- Stateless
-- Cryptographically signed
-
-They contain identity claims such as:
-
-- Issuer (`iss`)
-- Subject / user identifier (`sub`)
-- Audience (`aud`)
-- Expiration (`exp`)
-- Roles or scopes
-
-Access tokens are intended to be presented to downstream systems (outside the scope of this project).
-
-#### 4. Refresh Token
-
-Refresh tokens:
-
-- Are long-lived
-- Are opaque (not JWTs)
-- Are stored server-side in hashed form
-- Represent a user session
-
-They are used to:
-
-- Obtain new access tokens without re-authentication
-- Revoke sessions explicitly
-- Detect token reuse and potential compromise
-
-Refresh token rotation is supported to enhance security.
-
-##
-
-### Cryptographic Design (Token Trust Boundary)
-
-#### Token Signing Strategy
-
-The system supports **asymmetric cryptographic signing**:
-
-- Private key is used to sign JWTs
-- Public key is used by external systems to verify JWTs
-- Private key never leaves the Authorization Server
-
-This design:
-
-- Avoids shared secrets
-- Enables safe verification by multiple consumers
-- Supports future scaling and key rotation
-
-#### JWKS (JSON Web Key Set)
-
-The system exposes a standard endpoint:
+## 5. High-Level Architecture
 
 ```
-GET /.well-known/jwks.json
++---------+ +-------------------+ +-------------------+
+| User |<------->| Client App |<------->| Authorization |
+| | Login | (Web/Mobile/API) | Tokens | Server (this) |
++---------+ +-------------------+ +-------------------+
+|
+| JWKS (public keys)
+v
++-------------------+
+| Resource Server(s) |
+| (APIs) |
++-------------------+
 ```
 
-This endpoint publishes public signing keys and allows token verifiers to:
 
-- Retrieve active keys
-- Select the correct key via `kid`
-- Verify JWT signatures safely
+## 6. Core Modules
 
-##
+### 6.1 Identity Module (Users)
+Responsibilities:
+- User registration (optional)
+- Password hashing & verification
+- Account status flags:
+  - enabled/disabled
+  - locked (after abuse)
+  - emailVerified (optional)
 
-### External API (Public Contract)
+Data:
+- users table (or collection)
 
-#### Authentication Endpoints
+### 6.2 Client Trust Module (OAuth Clients)
+Responsibilities:
+- Register clients
+- Store and validate:
+  - client_id
+  - client_secret (hashed)
+  - allowed grant types
+  - allowed scopes
+  - token lifetimes overrides (optional)
+  - redirect URIs (only if you add auth-code flow later)
 
-- `POST /auth/register`
+Data:
+- clients table
 
-   Registers a new user
+### 6.3 Token Service
+Responsibilities:
+- Create signed JWT access tokens
+- Create refresh tokens (random, high entropy)
+- Persist refresh tokens with metadata
+- Enforce refresh token rotation & reuse detection
+- Token introspection (optional)
 
-- `POST /auth/login`
+Data:
+- refresh_tokens table
+- revoked_tokens table (optional, only if needed)
+- audit_log table
 
-   Authenticates a user and a client, returns:
+### 6.4 Key Management Module
+Responsibilities:
+- Maintain active signing key (private)
+- Publish JWKS (public)
+- Rotate keys safely (keep old public keys for validation until TTL passes)
 
-  - Access token (JWT)
-  - Refresh token
+Data:
+- keys table (optional) or keystore file + metadata
 
-- `POST /auth/refresh`
+## 7. Data Model (Minimal)
 
-   Exchanges a valid refresh token for:
+### 7.1 users
+- id (UUID)
+- email (unique)
+- password_hash
+- enabled (bool)
+- locked_until (datetime nullable)
+- created_at, updated_at
 
-  - New access token
-  - New refresh token (if rotation is enabled)
+### 7.2 clients
+- id (UUID)
+- client_id (public identifier)
+- client_secret_hash
+- name
+- allowed_grants (set)
+- allowed_scopes (set)
+- access_token_ttl_seconds
+- refresh_token_ttl_seconds
+- created_at, updated_at
 
-- `POST /auth/logout`
+### 7.3 refresh_tokens
+- id (UUID)
+- token_hash (store hash, never store raw token)
+- user_id (nullable for client-credentials)
+- client_id
+- issued_at
+- expires_at
+- revoked_at (nullable)
+- replaced_by_token_id (nullable)  // rotation chain
+- reuse_detected (bool)            // if old token used after rotation
+- user_agent (optional)
+- ip (optional)
 
-   Revokes refresh token(s) and invalidates session
+### 7.4 audit_log (recommended)
+- id
+- event_type (LOGIN_SUCCESS, LOGIN_FAIL, TOKEN_ISSUED, REFRESH_ROTATED, ...)
+- user_id (nullable)
+- client_id (nullable)
+- timestamp
+- metadata (json)
 
-##
+## 8. Endpoints (API Contract)
 
-### Persistence Model
+Base path: `/api`
 
-#### Users
+### 8.1 Auth endpoints (optional UI separate)
+- `POST /auth/register` (optional)
+- `POST /auth/login` (optional; if you prefer token endpoint only, skip)
 
-- Persisted with hashed credentials
-- Independent of tokens
+### 8.2 OAuth2-style token endpoint
+- `POST /oauth2/token`
 
-#### Clients
+Supported grants (phase 1):
+- `grant_type=password`
+  - body: username, password, client_id, client_secret, scope(optional)
+- `grant_type=refresh_token`
+  - body: refresh_token, client_id, client_secret
+Optional (phase 2):
+- `grant_type=client_credentials`
+  - body: client_id, client_secret, scope(optional)
 
-- Persisted configuration defining trust and permissions
+Response (typical):
+- access_token (JWT)
+- token_type = "Bearer"
+- expires_in
+- refresh_token (only for user grants)
+- scope
 
-#### Refresh Tokens
+### 8.3 JWKS
+- `GET /.well-known/jwks.json`
 
-- Persisted with:
-  - Hash only (never raw value)
-  - Expiry timestamp
-  - Revocation status
-  - Rotation linkage (token family)
+Returns:
+- public keys for JWT validation (kid, kty, alg, n/e for RSA, etc.)
 
-This persistence is required even though access tokens are stateless.
+### 8.4 Well-known metadata (optional but great)
+- `GET /.well-known/openid-configuration`
+Even if you don't implement full OIDC, you can publish:
+- issuer
+- token_endpoint
+- jwks_uri
+- supported_grant_types
+- supported_scopes
 
-##
+### 8.5 Introspection (optional)
+- `POST /oauth2/introspect`
+Used mainly for opaque tokens or admin debugging.
 
-### Non-Functional Requirements
+### 8.6 Admin APIs (minimal, can be secured)
+- `POST /admin/clients` (create client)
+- `GET /admin/clients/{id}`
+- `POST /admin/users/{id}/disable`
+Keep minimal and lock down.
 
-#### Security
+## 9. JWT Design
 
-- Secure password hashing (BCrypt / Argon2)
-- Short-lived access tokens
-- Refresh token reuse detection
-- Client authentication enforcement
-- No plaintext secrets stored or logged
+Access token (JWT):
+- Header:
+  - alg: RS256 (recommended) or ES256
+  - kid: key id for rotation
+- Claims:
+  - iss: issuer (e.g. `https://auth.local`)
+  - aud: intended audience (e.g. `orders-api`)
+  - sub: user id (or client id for client-credentials)
+  - iat, exp
+  - scope: space-separated scopes or array
+  - roles: array (optional)
+  - jti: unique token id (optional)
 
-Scalability
+Notes:
+- Access tokens are short-lived (e.g. 5–15 minutes)
+- Prefer **asymmetric signing** so resource servers only need public keys (JWKS)
 
-- Stateless access token validation
-- No server-side session state per request
-- Horizontal scalability supported
+## 10. Refresh Token Design (DB-backed)
 
-Maintainability
+Rules:
+- Refresh token is opaque random value (256-bit+)
+- Store only **hash** of refresh token in DB
+- Each refresh request:
+  1) validate client
+  2) validate refresh token hash exists and not revoked/expired
+  3) issue new access token
+  4) rotate refresh token (issue new refresh token)
+  5) revoke old refresh token and link `replaced_by_token_id`
 
-- Clear separation of identity, token, and client concerns
-- Replaceable persistence layer (H2 → PostgreSQL)
+Reuse detection:
+- If a revoked-but-rotated refresh token is used again:
+  - mark reuse_detected=true
+  - revoke the entire token family (all tokens in chain) OR revoke all active tokens for that user+client
+  - create audit log event
 
-##
+## 11. Security Requirements
 
-### Implementation Boundaries
+### 11.1 Passwords
+- Use strong hashing (bcrypt/argon2)
+- Always constant-time comparisons where relevant
 
-#### Explicitly Not Implemented
+### 11.2 Client secrets
+- Store hashed
+- Rotate secrets (optional phase 2)
 
-- OAuth authorization code flows
-- Browser redirects and SSO UX
-- Consent management
-- Resource Server authorization rules
+### 11.3 Rate limiting and abuse protection
+- Rate-limit:
+  - login/token endpoint by IP and by username
+- Add lockout:
+  - after N failures, lock for X minutes
+- Add audit logs
 
-These are intentionally excluded to keep the project focused on core identity and token mechanics.
+### 11.4 Token validation standards (resource servers)
+Resource servers must verify:
+- signature using JWKS
+- `iss` matches expected
+- `aud` matches the API
+- `exp` not expired
+- optionally `nbf`, `jti`
 
-##
+### 11.5 CORS / CSRF
+- Token endpoint is typically server-to-server; if used from browser:
+  - handle CORS carefully
+  - auth-code + PKCE is the safer pattern (phase 3)
 
-### Project Outcome
+## 12. Observability
 
-This project demonstrates:
+- Structured logs
+- Audit log table
+- Metrics (optional):
+  - token issuance count
+  - refresh rotation count
+  - login failure count
+- Tracing (optional)
 
-- Clear separation of identity and application logic
-- Realistic Authorization Server responsibilities
-- Secure token lifecycle management
-- Industry-aligned identity architecture concepts
+## 13. Deployment Model
 
-It serves as a learning-focused yet architecturally correct foundation for understanding modern authentication systems.
+- Single service for Authorization Server
+- Database (Postgres recommended)
+- Optional Redis for rate-limits
+- Keys:
+  - local keystore or DB key table
+  - support rotation
+
+## 14. Testing Strategy
+
+- Unit tests:
+  - password hashing and verification
+  - token signing/verifying
+  - refresh rotation rules and reuse detection
+- Integration tests:
+  - /oauth2/token success/fail cases
+  - jwks endpoint
+- Security tests:
+  - brute force simulation on token endpoint
+  - invalid client credentials
+  - replayed refresh token
+
+## 15. Milestones
+
+### Phase 1 (Core)
+- Users + Clients
+- /oauth2/token (password + refresh_token)
+- JWT RS256 + JWKS
+- DB-backed refresh rotation
+
+### Phase 2 (Hardening)
+- Abuse protection (rate limit + lockout)
+- Audit logs
+- Client credentials grant (service-to-service)
+
+### Phase 3 (Optional, advanced)
+- Authorization Code + PKCE
+- Well-known configuration
+- Minimal admin UI
+- Fine-grained scopes + consent (optional)
+
+## 16. Reference Behaviors (Compatibility Goals)
+
+While not claiming full OAuth2/OIDC compliance, the system should follow familiar behaviors:
+- Token endpoint shapes resemble OAuth2
+- JWKS format compatible with standard JWT libraries
+- Claims align with common patterns (iss/aud/sub/exp)
