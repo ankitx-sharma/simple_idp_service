@@ -14,7 +14,7 @@ This project is designed to demonstrate:
 
 ## 2. Scope
 
-### In-scope
+### 2.1 In-scope
 - User authentication (username/password)
 - Client registration and trust rules
 - Token issuance (access + refresh)
@@ -26,13 +26,21 @@ This project is designed to demonstrate:
 - Token introspection (optional, for opaque tokens or debugging)
 - Basic authorization concepts: scopes/roles as claims
 
-### Out-of-scope (Non-goals)
+### 2.2 Out-of-scope (Non-goals)
 - Full IAM suite (SCIM, HR provisioning, org charts, complex admin UI)
 - SAML
 - LDAP/AD federation
 - Social logins (Google/GitHub)
 - Full authorization policy engine (ABAC with complex rules)
 - Multi-tenant enterprise features (may be added later)
+
+### 2.3 Technology & Constraints
+- Runtime: Java 21, Spring Boot 3.x
+- Security: Spring Security (PasswordEncoder + request security hardening later)
+- Persistence: PostgreSQL (users, clients, refresh_tokens, audit_log)
+- Migrations: Flyway (schema versioning)
+- JWT: RS256 signing + JWKS publishing (library: [choose Nimbus or JJWT])
+- Rate limiting: Redis (phase 2) for counters/limits (not a source of truth)
 
 ## 3. Terminology
 
@@ -133,6 +141,10 @@ Responsibilities:
 Data:
 - keys table (optional) or keystore file + metadata
 
+#### Key Rotation Policy
+- Maintain 1 active signing key + keep old public keys published until all tokens signed by them have expired (>= access token TTL window).
+- Include kid in JWT header to support rotation.
+
 ## 7. Data Model (Minimal)
 
 ### 7.1 users
@@ -176,8 +188,12 @@ Data:
 - metadata (json)
 
 ## 8. Endpoints (API Contract)
-
 Base path: `/api`
+
+#### Client Authentication
+- Client credentials are validated on the token endpoint using:
+  - Option A: HTTP Basic Auth
+  - Option B: `client_id` + `client_secret` form params (for learning/demo)
 
 ### 8.1 Auth endpoints (optional UI separate)
 - `POST /auth/register` (optional)
@@ -293,6 +309,13 @@ Resource servers must verify:
 - Token endpoint is typically server-to-server; if used from browser:
   - handle CORS carefully
   - auth-code + PKCE is the safer pattern (phase 3)
+
+### 11.6 Error Response Contract
+Return OAuth2-style errors:
+- invalid_client → 401
+- invalid_grant → 400
+- invalid_scope → 400
+- invalid_request → 400
 
 ## 12. Observability
 
